@@ -39,6 +39,10 @@ COPY load_titles.dump         /init/
 COPY postgresql/employees.sql  /init/postgresql/employees.sql
 COPY postgresql/objects.sql    /init/postgresql/objects.sql
 
+# Pre-create /etc/motd as world-writable: initdb scripts run as the 'postgres'
+# user (not root), so they cannot write to /etc/motd by default.
+RUN touch /etc/motd && chmod a+w /etc/motd
+
 # Install the initialization script
 COPY docker/postgresql/init.sh /docker-entrypoint-initdb.d/00-employees.sh
 RUN chmod +x /docker-entrypoint-initdb.d/00-employees.sh

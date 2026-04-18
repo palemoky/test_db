@@ -37,6 +37,10 @@ COPY load_salaries2.dump      /init/
 COPY load_salaries3.dump      /init/
 COPY load_titles.dump         /init/
 
+# Pre-create /etc/motd as world-writable: initdb scripts run as the 'mysql'
+# user (not root) in MySQL 8+, so they cannot write to /etc/motd by default.
+RUN touch /etc/motd && chmod a+w /etc/motd
+
 # Install the initialization script
 COPY docker/mysql/init.sh /docker-entrypoint-initdb.d/00-employees.sh
 RUN chmod +x /docker-entrypoint-initdb.d/00-employees.sh
