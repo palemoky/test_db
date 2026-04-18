@@ -1,0 +1,301 @@
+name: Docker Build & Push
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'docker/**'
+      - '*.sql'
+      - '*.dump'
+      - '.github/workflows/docker-build.yml'
+  pull_request:
+    branches:
+      - main
+      - master
+    paths:
+      - 'docker/**'
+      - '*.sql'
+      - '*.dump'
+      - '.github/workflows/docker-build.yml'
+  workflow_dispatch:
+
+# Cancel in-progress runs for the same ref to save CI minutes
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+# ---------------------------------------------------------------------------
+# Workflow-level variables (non-sensitive credentials for the test database).
+#
+# Configure in: Settings → Variables → Actions
+#   MYSQL_ROOT_PASSWORD  – root password used when building/testing MySQL images
+#   POSTGRES_PASSWORD    – password used when building/testing PostgreSQL images
+#
+# Both fall back to "test" if the variable is not configured, so the workflow
+# works out of the box without any setup.
+#
+# Use `vars.*` (not `secrets.*`) so the value is visible in job logs and can
+# be referenced safely in places where secrets are masked/redacted.
+# ---------------------------------------------------------------------------
+env:
+  MYSQL_ROOT_PASSWORD: ${{ vars.MYSQL_ROOT_PASSWORD || 'test' }}
+  POSTGRES_PASSWORD: ${{ vars.POSTGRES_PASSWORD || 'test' }}
+
+jobs:
+  # ===========================================================================
+  # MySQL images
+  # ===========================================================================
+  build-mysql:
+    name: MySQL ${{ matrix.mysql-version }} (${{ matrix.platforms }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # MySQL 5.7: official image is amd64-only
+          - mysql-version: '5.7'
+            dockerfile: 'docker/mysql/Dockerfile.mysql57'
+            platforms: 'linux/amd64'
+          # MySQL 8.4: supports amd64 + arm64
+          - mysql-version: '8.4'
+            dockerfile: 'docker/mysql/Dockerfile.mysql84'
+            platforms: 'linux/amd64,linux/arm64'
+          # MySQL 9.5: supports amd64 + arm64; requires --commands for SOURCE
+          - mysql-version: '9.5'
+            dockerfile: 'docker/mysql/Dockerfile.mysql95'
+            platforms: 'linux/amd64,linux/arm64'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # QEMU enables cross-platform emulation (required for arm64 on amd64 runners)
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      # Buildx is the multi-platform build driver
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # -----------------------------------------------------------------------
+      # Login – only on actual pushes, not PRs (to protect secrets)
+      # -----------------------------------------------------------------------
+      - name: Log in to Docker Hub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GitHub Container Registry (GHCR)
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # -----------------------------------------------------------------------
+      # Extract metadata for image labels & tags
+      # -----------------------------------------------------------------------
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/test-db-mysql
+            ghcr.io/${{ github.repository_owner }}/test-db-mysql
+          tags: |
+            type=raw,value=${{ matrix.mysql-version }}
+
+      # -----------------------------------------------------------------------
+      # Build (and push on non-PR events)
+      # -----------------------------------------------------------------------
+      - name: Build and push MySQL ${{ matrix.mysql-version }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platforms }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Layer cache stored in GitHub Actions cache (per platform)
+          cache-from: type=gha,scope=mysql-${{ matrix.mysql-version }}
+          cache-to: type=gha,mode=max,scope=mysql-${{ matrix.mysql-version }}
+
+      # -----------------------------------------------------------------------
+      # Quick smoke test (only on amd64, no cross-arch emulation needed for test)
+      # -----------------------------------------------------------------------
+      - name: Smoke test – MySQL ${{ matrix.mysql-version }}
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        env:
+          # Re-declare at step level so the inline shell script can reference
+          # $MYSQL_ROOT_PASSWORD directly without ${{ }} expression syntax.
+          MYSQL_ROOT_PASSWORD: ${{ env.MYSQL_ROOT_PASSWORD }}
+        run: |
+          echo "==> Building single-arch test image for smoke test..."
+          docker build \
+            --platform linux/amd64 \
+            -f ${{ matrix.dockerfile }} \
+            -t test-db-mysql:smoke \
+            .
+
+          echo "==> Starting container (password from vars.MYSQL_ROOT_PASSWORD)..."
+          CID=$(docker run -d \
+            -e MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD}" \
+            --health-cmd "mysqladmin ping -uroot -p${MYSQL_ROOT_PASSWORD} --silent" \
+            --health-interval=5s \
+            --health-timeout=5s \
+            --health-retries=30 \
+            test-db-mysql:smoke)
+
+          echo "==> Waiting for database to be ready (up to 300s)..."
+          for i in $(seq 1 60); do
+            STATUS=$(docker inspect --format='{{.State.Health.Status}}' "$CID" 2>/dev/null || echo "starting")
+            if [ "$STATUS" = "healthy" ]; then
+              echo "Container is healthy after $((i*5))s"
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "ERROR: Container did not become healthy in time"
+              docker logs "$CID"
+              docker rm -f "$CID"
+              exit 1
+            fi
+            sleep 5
+          done
+
+          echo "==> Verifying employees table count..."
+          COUNT=$(docker exec "$CID" mysql -uroot -p"${MYSQL_ROOT_PASSWORD}" -BN -e \
+            "SELECT COUNT(*) FROM employees.employees;")
+          echo "employees table rows: $COUNT"
+          [ "$COUNT" -eq 300024 ] || {
+            echo "ERROR: Expected 300024 rows, got $COUNT"
+            docker logs "$CID"
+            docker rm -f "$CID"
+            exit 1
+          }
+
+          echo "==> Smoke test PASSED for MySQL ${{ matrix.mysql-version }}!"
+          docker rm -f "$CID"
+
+  # ===========================================================================
+  # PostgreSQL images
+  # ===========================================================================
+  build-postgresql:
+    name: PostgreSQL ${{ matrix.pg-version }} (${{ matrix.platforms }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pg-version: '16'
+            dockerfile: 'docker/postgresql/Dockerfile.pg16'
+            platforms: 'linux/amd64,linux/arm64'
+          - pg-version: '17'
+            dockerfile: 'docker/postgresql/Dockerfile.pg17'
+            platforms: 'linux/amd64,linux/arm64'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/test-db-postgresql
+            ghcr.io/${{ github.repository_owner }}/test-db-postgresql
+          tags: |
+            type=raw,value=${{ matrix.pg-version }}
+
+      - name: Build and push PostgreSQL ${{ matrix.pg-version }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platforms }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=postgresql-${{ matrix.pg-version }}
+          cache-to: type=gha,mode=max,scope=postgresql-${{ matrix.pg-version }}
+
+      # -----------------------------------------------------------------------
+      # Quick smoke test (amd64 only)
+      # -----------------------------------------------------------------------
+      - name: Smoke test – PostgreSQL ${{ matrix.pg-version }}
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        env:
+          POSTGRES_PASSWORD: ${{ env.POSTGRES_PASSWORD }}
+        run: |
+          echo "==> Building single-arch test image for smoke test..."
+          docker build \
+            --platform linux/amd64 \
+            -f ${{ matrix.dockerfile }} \
+            -t test-db-postgresql:smoke \
+            .
+
+          echo "==> Starting container (password from vars.POSTGRES_PASSWORD)..."
+          CID=$(docker run -d \
+            -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD}" \
+            --health-cmd "pg_isready -U postgres" \
+            --health-interval=5s \
+            --health-timeout=5s \
+            --health-retries=30 \
+            test-db-postgresql:smoke)
+
+          echo "==> Waiting for database to be ready (up to 300s)..."
+          for i in $(seq 1 60); do
+            STATUS=$(docker inspect --format='{{.State.Health.Status}}' "$CID" 2>/dev/null || echo "starting")
+            if [ "$STATUS" = "healthy" ]; then
+              echo "Container is healthy after $((i*5))s"
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "ERROR: Container did not become healthy in time"
+              docker logs "$CID"
+              docker rm -f "$CID"
+              exit 1
+            fi
+            sleep 5
+          done
+
+          echo "==> Verifying employees table count..."
+          COUNT=$(docker exec "$CID" psql -U postgres -d employees -tAc \
+            "SELECT COUNT(*) FROM employees;")
+          echo "employees table rows: $COUNT"
+          [ "$COUNT" -eq 300024 ] || {
+            echo "ERROR: Expected 300024 rows, got $COUNT"
+            docker logs "$CID"
+            docker rm -f "$CID"
+            exit 1
+          }
+
+          echo "==> Smoke test PASSED for PostgreSQL ${{ matrix.pg-version }}!"
+          docker rm -f "$CID"

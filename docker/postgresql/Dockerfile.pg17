@@ -1,0 +1,49 @@
+# syntax=docker/dockerfile:1
+# =============================================================================
+# test_db – Employees Sample Database (PostgreSQL 17)
+#
+# Platforms: linux/amd64, linux/arm64
+#
+# Default credentials:
+#   Host:     127.0.0.1:5432
+#   User:     postgres
+#   Password: (set via POSTGRES_PASSWORD env var, default: test)
+#   Database: employees
+# =============================================================================
+
+FROM postgres:17
+
+LABEL org.opencontainers.image.title="test-db-postgresql" \
+      org.opencontainers.image.description="Employees sample database pre-loaded in PostgreSQL 17" \
+      org.opencontainers.image.version="17" \
+      org.opencontainers.image.source="https://github.com/datacharmer/test_db" \
+      org.opencontainers.image.licenses="CC-BY-SA-3.0"
+
+# POSTGRES_PASSWORD must be set at runtime.
+# GitHub Actions reads it from vars.POSTGRES_PASSWORD (see docker-build.yml).
+# Local usage: docker run -e POSTGRES_PASSWORD=yourpassword ...
+#              or via docker-compose with a .env file.
+
+# Copy all SQL schema and dump files into /init
+COPY employees.sql            /init/
+COPY load_departments.dump    /init/
+COPY load_dept_emp.dump       /init/
+COPY load_dept_manager.dump   /init/
+COPY load_employees.dump      /init/
+COPY load_salaries1.dump      /init/
+COPY load_salaries2.dump      /init/
+COPY load_salaries3.dump      /init/
+COPY load_titles.dump         /init/
+
+# Copy PostgreSQL-specific files
+COPY postgresql/employees.sql  /init/postgresql/employees.sql
+COPY postgresql/objects.sql    /init/postgresql/objects.sql
+
+# Install the initialization script
+COPY docker/postgresql/init.sh /docker-entrypoint-initdb.d/00-employees.sh
+RUN chmod +x /docker-entrypoint-initdb.d/00-employees.sh
+
+# Show /etc/motd (connection info) automatically on interactive shell sessions
+RUN echo '[ -f /etc/motd ] && cat /etc/motd' >> /etc/bash.bashrc
+
+EXPOSE 5432

@@ -1,0 +1,2 @@
+# Local environment variables (passwords, etc.) – never commit this file
+.env

@@ -1,0 +1,50 @@
+# syntax=docker/dockerfile:1
+# =============================================================================
+# test_db – Employees Sample Database (MySQL 9.5)
+#
+# Platforms: linux/amd64, linux/arm64
+#
+# Note: MySQL 9.5+ requires the --commands flag for SOURCE to work.
+#       The init.sh script detects the version and sets this automatically.
+#
+# Default credentials (override with -e MYSQL_ROOT_PASSWORD=...):
+#   Host:     127.0.0.1:3306
+#   User:     root
+#   Password: test
+#   Database: employees
+# =============================================================================
+
+FROM mysql:9.5
+
+LABEL org.opencontainers.image.title="test-db-mysql" \
+      org.opencontainers.image.description="Employees sample database pre-loaded in MySQL 9.5" \
+      org.opencontainers.image.version="9.5" \
+      org.opencontainers.image.source="https://github.com/datacharmer/test_db" \
+      org.opencontainers.image.licenses="CC-BY-SA-3.0"
+
+# MYSQL_ROOT_PASSWORD must be set at runtime.
+# GitHub Actions reads it from vars.MYSQL_ROOT_PASSWORD (see docker-build.yml).
+# Local usage: docker run -e MYSQL_ROOT_PASSWORD=yourpassword ...
+#              or via docker-compose with a .env file.
+
+# Copy all SQL schema and dump files into /init
+COPY employees.sql            /init/
+COPY show_elapsed.sql         /init/
+COPY objects.sql              /init/
+COPY load_departments.dump    /init/
+COPY load_dept_emp.dump       /init/
+COPY load_dept_manager.dump   /init/
+COPY load_employees.dump      /init/
+COPY load_salaries1.dump      /init/
+COPY load_salaries2.dump      /init/
+COPY load_salaries3.dump      /init/
+COPY load_titles.dump         /init/
+
+# Install the initialization script
+COPY docker/mysql/init.sh /docker-entrypoint-initdb.d/00-employees.sh
+RUN chmod +x /docker-entrypoint-initdb.d/00-employees.sh
+
+# Show /etc/motd (connection info) automatically on interactive shell sessions
+RUN echo '[ -f /etc/motd ] && cat /etc/motd' >> /etc/bash.bashrc
+
+EXPOSE 3306

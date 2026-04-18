@@ -1,0 +1,117 @@
+# =============================================================================
+# docker-compose.yml – test_db local development
+#
+# Usage:
+#   # Start a specific database:
+#   docker compose up mysql-84
+#   docker compose up postgresql-17
+#
+#   # Or start all at once:
+#   docker compose up
+#
+# Passwords are read from environment variables with a fallback default.
+# Recommended: create a .env file in this directory (git-ignored) to override:
+#
+#   MYSQL_ROOT_PASSWORD=yourpassword
+#   POSTGRES_PASSWORD=yourpassword
+#
+# Quick start without .env (uses built-in defaults):
+#   docker compose up mysql-84
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # MySQL 5.7  (linux/amd64 only)
+  # ---------------------------------------------------------------------------
+  mysql-57:
+    build:
+      context: .
+      dockerfile: docker/mysql/Dockerfile.mysql57
+    image: test-db-mysql:5.7
+    platform: linux/amd64
+    ports:
+      - "13357:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-test}
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-test}", "--silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  # ---------------------------------------------------------------------------
+  # MySQL 8.4
+  # ---------------------------------------------------------------------------
+  mysql-84:
+    build:
+      context: .
+      dockerfile: docker/mysql/Dockerfile.mysql84
+    image: test-db-mysql:8.4
+    ports:
+      - "13384:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-test}
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-test}", "--silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  # ---------------------------------------------------------------------------
+  # MySQL 9.5
+  # ---------------------------------------------------------------------------
+  mysql-95:
+    build:
+      context: .
+      dockerfile: docker/mysql/Dockerfile.mysql95
+    image: test-db-mysql:9.5
+    ports:
+      - "13395:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-test}
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-test}", "--silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL 16
+  # ---------------------------------------------------------------------------
+  postgresql-16:
+    build:
+      context: .
+      dockerfile: docker/postgresql/Dockerfile.pg16
+    image: test-db-postgresql:16
+    ports:
+      - "15416:5432"
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-test}
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL 17
+  # ---------------------------------------------------------------------------
+  postgresql-17:
+    build:
+      context: .
+      dockerfile: docker/postgresql/Dockerfile.pg17
+    image: test-db-postgresql:17
+    ports:
+      - "15417:5432"
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-test}
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
