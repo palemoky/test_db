@@ -30,14 +30,12 @@ concurrency:
 # Workflow-level variables (non-sensitive credentials for the test database).
 #
 # Configure in: Settings → Variables → Actions
+#   DOCKERHUB_USERNAME   – Docker Hub account to push images to
 #   MYSQL_ROOT_PASSWORD  – root password used when building/testing MySQL images
 #   POSTGRES_PASSWORD    – password used when building/testing PostgreSQL images
 #
-# Both fall back to "test" if the variable is not configured, so the workflow
-# works out of the box without any setup.
-#
-# Use `vars.*` (not `secrets.*`) so the value is visible in job logs and can
-# be referenced safely in places where secrets are masked/redacted.
+# All fall back to safe defaults if not configured.
+# Use `vars.*` (not `secrets.*`) so values are visible in job logs.
 # ---------------------------------------------------------------------------
 env:
   MYSQL_ROOT_PASSWORD: ${{ vars.MYSQL_ROOT_PASSWORD || 'test' }}
@@ -45,7 +43,7 @@ env:
 
 jobs:
   # ===========================================================================
-  # MySQL images
+  # MySQL images  (single repo: test-db, tags: mysql-8.4 / mysql-9.5)
   # ===========================================================================
   build-mysql:
     name: MySQL ${{ matrix.mysql-version }} (${{ matrix.platforms }})
@@ -54,15 +52,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # MySQL 5.7: official image is amd64-only
-          - mysql-version: "5.7"
-            dockerfile: "docker/mysql/Dockerfile.mysql57"
-            platforms: "linux/amd64"
-          # MySQL 8.4: supports amd64 + arm64
           - mysql-version: "8.4"
             dockerfile: "docker/mysql/Dockerfile.mysql84"
             platforms: "linux/amd64,linux/arm64"
-          # MySQL 9.5: supports amd64 + arm64; requires --commands for SOURCE
           - mysql-version: "9.5"
             dockerfile: "docker/mysql/Dockerfile.mysql95"
             platforms: "linux/amd64,linux/arm64"
@@ -91,14 +83,14 @@ jobs:
 
       # -----------------------------------------------------------------------
       # Extract metadata for image labels & tags
+      # Single repo `test-db`, tag format: mysql-8.4 / mysql-9.5
       # -----------------------------------------------------------------------
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ vars.DOCKERHUB_USERNAME }}/test-db-mysql
-          tags: |
-            type=raw,value=${{ matrix.mysql-version }}
+          images: ${{ vars.DOCKERHUB_USERNAME }}/test-db
+          tags: type=raw,value=mysql-${{ matrix.mysql-version }}
 
       # -----------------------------------------------------------------------
       # Build (and push on non-PR events)
@@ -117,13 +109,12 @@ jobs:
           cache-to: type=gha,mode=max,scope=mysql-${{ matrix.mysql-version }}
 
       # -----------------------------------------------------------------------
-      # Quick smoke test (only on amd64, no cross-arch emulation needed for test)
+      # Smoke test: build amd64-only image, start container, wait until the
+      # employees table is queryable (proving init completed), then verify row count.
       # -----------------------------------------------------------------------
       - name: Smoke test – MySQL ${{ matrix.mysql-version }}
         if: github.event_name == 'pull_request' || github.event_name == 'push'
         env:
-          # Re-declare at step level so the inline shell script can reference
-          # $MYSQL_ROOT_PASSWORD directly without ${{ }} expression syntax.
           MYSQL_ROOT_PASSWORD: ${{ env.MYSQL_ROOT_PASSWORD }}
         run: |
           echo "==> Building single-arch test image for smoke test..."
@@ -136,31 +127,32 @@ jobs:
           echo "==> Starting container (password from vars.MYSQL_ROOT_PASSWORD)..."
           CID=$(docker run -d \
             -e MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD}" \
-            --health-cmd "mysqladmin ping -uroot -p${MYSQL_ROOT_PASSWORD} --silent" \
-            --health-interval=5s \
-            --health-timeout=5s \
-            --health-retries=30 \
+            --health-cmd "MYSQL_PWD=${MYSQL_ROOT_PASSWORD} mysql -uroot employees -e 'SELECT 1 FROM employees LIMIT 1;'" \
+            --health-start-period=30s \
+            --health-interval=15s \
+            --health-timeout=10s \
+            --health-retries=40 \
             test-db-mysql:smoke)
 
-          echo "==> Waiting for database to be ready (up to 300s)..."
-          for i in $(seq 1 60); do
+          echo "==> Waiting for employees data to be fully loaded (up to ~600s)..."
+          for i in $(seq 1 80); do
             STATUS=$(docker inspect --format='{{.State.Health.Status}}' "$CID" 2>/dev/null || echo "starting")
             if [ "$STATUS" = "healthy" ]; then
-              echo "Container is healthy after $((i*5))s"
+              echo "Container is healthy after approx $((i*8))s"
               break
             fi
-            if [ "$i" -eq 60 ]; then
+            if [ "$i" -eq 80 ]; then
               echo "ERROR: Container did not become healthy in time"
               docker logs "$CID"
               docker rm -f "$CID"
               exit 1
             fi
-            sleep 5
+            sleep 8
           done
 
           echo "==> Verifying employees table count..."
-          COUNT=$(docker exec "$CID" mysql -uroot -p"${MYSQL_ROOT_PASSWORD}" -BN -e \
-            "SELECT COUNT(*) FROM employees.employees;")
+          COUNT=$(docker exec -e MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" "$CID" \
+            mysql -uroot -BN -e "SELECT COUNT(*) FROM employees.employees;")
           echo "employees table rows: $COUNT"
           [ "$COUNT" -eq 300024 ] || {
             echo "ERROR: Expected 300024 rows, got $COUNT"
@@ -173,7 +165,7 @@ jobs:
           docker rm -f "$CID"
 
   # ===========================================================================
-  # PostgreSQL images
+  # PostgreSQL images  (single repo: test-db, tags: postgresql-16 / postgresql-17)
   # ===========================================================================
   build-postgresql:
     name: PostgreSQL ${{ matrix.pg-version }} (${{ matrix.platforms }})
@@ -206,13 +198,13 @@ jobs:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # Single repo `test-db`, tag format: postgresql-16 / postgresql-17
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ vars.DOCKERHUB_USERNAME }}/test-db-postgresql
-          tags: |
-            type=raw,value=${{ matrix.pg-version }}
+          images: ${{ vars.DOCKERHUB_USERNAME }}/test-db
+          tags: type=raw,value=postgresql-${{ matrix.pg-version }}
 
       - name: Build and push PostgreSQL ${{ matrix.pg-version }}
         uses: docker/build-push-action@v6
@@ -227,7 +219,8 @@ jobs:
           cache-to: type=gha,mode=max,scope=postgresql-${{ matrix.pg-version }}
 
       # -----------------------------------------------------------------------
-      # Quick smoke test (amd64 only)
+      # Smoke test: health-check queries employees table directly so the test
+      # only passes after init.sh has fully loaded all data.
       # -----------------------------------------------------------------------
       - name: Smoke test – PostgreSQL ${{ matrix.pg-version }}
         if: github.event_name == 'pull_request' || github.event_name == 'push'
@@ -244,26 +237,27 @@ jobs:
           echo "==> Starting container (password from vars.POSTGRES_PASSWORD)..."
           CID=$(docker run -d \
             -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD}" \
-            --health-cmd "pg_isready -U postgres" \
-            --health-interval=5s \
-            --health-timeout=5s \
-            --health-retries=30 \
+            --health-cmd "psql -U postgres -d employees -c 'SELECT 1 FROM employees LIMIT 1;'" \
+            --health-start-period=30s \
+            --health-interval=15s \
+            --health-timeout=10s \
+            --health-retries=40 \
             test-db-postgresql:smoke)
 
-          echo "==> Waiting for database to be ready (up to 300s)..."
-          for i in $(seq 1 60); do
+          echo "==> Waiting for employees data to be fully loaded (up to ~600s)..."
+          for i in $(seq 1 80); do
             STATUS=$(docker inspect --format='{{.State.Health.Status}}' "$CID" 2>/dev/null || echo "starting")
             if [ "$STATUS" = "healthy" ]; then
-              echo "Container is healthy after $((i*5))s"
+              echo "Container is healthy after approx $((i*8))s"
               break
             fi
-            if [ "$i" -eq 60 ]; then
+            if [ "$i" -eq 80 ]; then
               echo "ERROR: Container did not become healthy in time"
               docker logs "$CID"
               docker rm -f "$CID"
               exit 1
             fi
-            sleep 5
+            sleep 8
           done
 
           echo "==> Verifying employees table count..."

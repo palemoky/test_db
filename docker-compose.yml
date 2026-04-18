@@ -2,90 +2,66 @@
 # docker-compose.yml – test_db local development
 #
 # Usage:
-#   # Start a specific database:
-#   docker compose up mysql-84
-#   docker compose up postgresql-17
+#   docker compose up mysql-84       # MySQL 8.4  on port 13384
+#   docker compose up mysql-95       # MySQL 9.5  on port 13395
+#   docker compose up postgresql-16  # PostgreSQL 16 on port 15416
+#   docker compose up postgresql-17  # PostgreSQL 17 on port 15417
+#   docker compose up                # all services
 #
-#   # Or start all at once:
-#   docker compose up
-#
-# Passwords are read from environment variables with a fallback default.
-# Recommended: create a .env file in this directory (git-ignored) to override:
-#
-#   MYSQL_ROOT_PASSWORD=yourpassword
-#   POSTGRES_PASSWORD=yourpassword
-#
-# Quick start without .env (uses built-in defaults):
-#   docker compose up mysql-84
+# Passwords are read from environment variables with fallback defaults.
+# Copy .env.example → .env and customize to override.
 # =============================================================================
 
 services:
   # ---------------------------------------------------------------------------
-  # MySQL 5.7  (linux/amd64 only)
-  # ---------------------------------------------------------------------------
-  mysql-57:
-    build:
-      context: .
-      dockerfile: docker/mysql/Dockerfile.mysql57
-    image: test-db-mysql:5.7
-    platform: linux/amd64
-    ports:
-      - "13357:3306"
-    environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-test}
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-test}", "--silent"]
-      interval: 10s
-      timeout: 5s
-      retries: 30
-      start_period: 60s
-
-  # ---------------------------------------------------------------------------
-  # MySQL 8.4
+  # MySQL 8.4  (linux/amd64 + linux/arm64)
+  # Docker Hub: <DOCKERHUB_USERNAME>/test-db:mysql-8.4
   # ---------------------------------------------------------------------------
   mysql-84:
     build:
       context: .
       dockerfile: docker/mysql/Dockerfile.mysql84
-    image: test-db-mysql:8.4
+    image: test-db:mysql-8.4
     ports:
       - "13384:3306"
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-test}
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-test}", "--silent"]
+      test: ["CMD", "sh", "-c", "MYSQL_PWD=${MYSQL_ROOT_PASSWORD:-test} mysqladmin ping -uroot --silent"]
       interval: 10s
       timeout: 5s
       retries: 30
       start_period: 60s
 
   # ---------------------------------------------------------------------------
-  # MySQL 9.5
+  # MySQL 9.5  (linux/amd64 + linux/arm64)
+  # Docker Hub: <DOCKERHUB_USERNAME>/test-db:mysql-9.5
   # ---------------------------------------------------------------------------
   mysql-95:
     build:
       context: .
       dockerfile: docker/mysql/Dockerfile.mysql95
-    image: test-db-mysql:9.5
+    image: test-db:mysql-9.5
     ports:
       - "13395:3306"
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-test}
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-test}", "--silent"]
+      test: ["CMD", "sh", "-c", "MYSQL_PWD=${MYSQL_ROOT_PASSWORD:-test} mysqladmin ping -uroot --silent"]
       interval: 10s
       timeout: 5s
       retries: 30
       start_period: 60s
 
   # ---------------------------------------------------------------------------
-  # PostgreSQL 16
+  # PostgreSQL 16  (linux/amd64 + linux/arm64)
+  # Docker Hub: <DOCKERHUB_USERNAME>/test-db:postgresql-16
   # ---------------------------------------------------------------------------
   postgresql-16:
     build:
       context: .
       dockerfile: docker/postgresql/Dockerfile.pg16
-    image: test-db-postgresql:16
+    image: test-db:postgresql-16
     ports:
       - "15416:5432"
     environment:
@@ -98,13 +74,14 @@ services:
       start_period: 60s
 
   # ---------------------------------------------------------------------------
-  # PostgreSQL 17
+  # PostgreSQL 17  (linux/amd64 + linux/arm64)
+  # Docker Hub: <DOCKERHUB_USERNAME>/test-db:postgresql-17
   # ---------------------------------------------------------------------------
   postgresql-17:
     build:
       context: .
       dockerfile: docker/postgresql/Dockerfile.pg17
-    image: test-db-postgresql:17
+    image: test-db:postgresql-17
     ports:
       - "15417:5432"
     environment:
